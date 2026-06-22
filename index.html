@@ -8,17 +8,13 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
   <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <!-- Load Firebase modules and expose to window -->
-  <script type="module">
-    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
-    import { getAuth, signInAnonymously, setPersistence, browserLocalPersistence } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-    import { getFirestore, collection, doc, addDoc, onSnapshot, query, Timestamp, updateDoc, arrayUnion } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
-    window._fb = { initializeApp, getAuth, signInAnonymously, setPersistence, browserLocalPersistence, getFirestore, collection, doc, addDoc, onSnapshot, query, Timestamp, updateDoc, arrayUnion };
-  </script>
 </head>
 <body class="bg-gray-900 text-white min-h-screen">
   <div id="root"></div>
-  <script type="text/babel">
+  <script type="text/babel" data-type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+import { getAuth, signInAnonymously, setPersistence, browserLocalPersistence } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+import { getFirestore, collection, doc, addDoc, onSnapshot, query, Timestamp, updateDoc, arrayUnion } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
   
 const firebaseConfig = {
   apiKey: "AIzaSyAkZfNEbp_6WptqHEBogtESXau1vozXdF0",
@@ -29,24 +25,6 @@ const firebaseConfig = {
   appId: "1:765759437792:web:4190b9b356574fe4514985",
   measurementId: "G-72F4CSG4EG"
 };
-
-  
-const {
-  initializeApp,
-  getAuth,
-  signInAnonymously,
-  setPersistence,
-  browserLocalPersistence,
-  getFirestore,
-  collection,
-  doc,
-  addDoc,
-  onSnapshot,
-  query,
-  Timestamp,
-  updateDoc,
-  arrayUnion
-} = window._fb;
 
 const appId = 'shared-catering-crm-2024-v1';
 

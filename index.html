@@ -391,11 +391,16 @@ function CustomerDetail({ db, customerId, onBack }) {
   React.useEffect(() => {
     if (!db) return;
     const unsub = onSnapshot(doc(db, customerDocPath), (docSnap) => {
-      if (docSnap.exists()) {
+      const exists = typeof docSnap.exists === 'function' ? docSnap.exists() : docSnap.exists;
+      if (exists) {
         const data = { id: docSnap.id, ...docSnap.data() };
         setCustomer(data);
         setEditableInfo({ name: data.name, phone: data.phone, address: data.address || '' });
       } else { setCustomer(null); }
+      setIsLoading(false);
+    }, (err) => {
+      console.error("Error fetching customer details:", err);
+      setCustomer(null);
       setIsLoading(false);
     });
     return () => unsub();
@@ -405,7 +410,11 @@ function CustomerDetail({ db, customerId, onBack }) {
     if (!db) return;
     const logsCollectionPath = `${customerDocPath}/logs`;
     const qref = query(collection(db, logsCollectionPath));
-    const unsub = onSnapshot(qref, (snapshot) => setLogs(snapshot.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => b.createdAt.toDate() - a.createdAt.toDate())));
+    const getLogTime = (log) => log.createdAt?.toDate ? log.createdAt.toDate().getTime() : 0;
+    const unsub = onSnapshot(qref, (snapshot) => setLogs(snapshot.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => getLogTime(b) - getLogTime(a))), (err) => {
+      console.error("Error fetching customer logs:", err);
+      setLogs([]);
+    });
     return () => unsub();
   }, [db, customerDocPath]);
 

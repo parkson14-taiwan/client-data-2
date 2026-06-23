@@ -50,6 +50,7 @@ const DATA_ROOT = `artifacts/${appId}/public/data`;
 const PROJECT_TASKS_PATH = `${DATA_ROOT}/projectTasks`;
 const CUSTOMERS_PATH = `${DATA_ROOT}/customers`;
 const INTAKE_SUBMISSIONS_PATH = `${DATA_ROOT}/intakeSubmissions`;
+const SCREENSHOT_INTAKE_FUNCTION_URL = 'https://analyzescreenshotintake-3ebeaoul7a-uc.a.run.app';
 
 const STATUS_OPTIONS = [
   { value: 'new', label: 'New' },
@@ -1022,7 +1023,9 @@ function ScreenshotIntake({ db, functionsApi, customers, onBack, onCreated }) {
     setIsAnalyzing(true);
     setMessage('');
     try {
-      const analyzeScreenshotIntake = httpsCallable(functionsApi, 'analyzeScreenshotIntake');
+      const analyzeScreenshotIntake = functionsApi.httpsCallableFromURL
+        ? functionsApi.httpsCallableFromURL(SCREENSHOT_INTAKE_FUNCTION_URL)
+        : httpsCallable(functionsApi, 'analyzeScreenshotIntake');
       const response = await analyzeScreenshotIntake({
         imageDataUrl,
         fileName: fileMeta?.name || 'screenshot',

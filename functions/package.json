@@ -2,11 +2,11 @@
   "name": "client-data-2-functions",
   "private": true,
   "engines": {
-    "node": "20"
+    "node": "22"
   },
   "main": "index.js",
   "dependencies": {
-    "firebase-admin": "^12.7.0",
-    "firebase-functions": "^6.1.2"
+    "firebase-admin": "^13.6.0",
+    "firebase-functions": "^7.2.5"
   }
 }

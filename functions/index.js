@@ -43,6 +43,7 @@ function parseJsonObject(text) {
 exports.analyzeScreenshotIntake = onCall(
   {
     secrets: [openaiApiKey],
+    invoker: "public",
     timeoutSeconds: 60,
     memory: "512MiB",
   },

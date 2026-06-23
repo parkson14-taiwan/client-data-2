@@ -39,9 +39,12 @@ const onSnapshot = (queryRef, onNext, onError) => queryRef.onSnapshot(onNext, on
 const query = (collectionRef) => collectionRef;
 const Timestamp = firebase.firestore.Timestamp;
 const updateDoc = (docRef, data) => docRef.update(data);
+const setDoc = (docRef, data, options) => docRef.set(data, options);
 const arrayUnion = (value) => firebase.firestore.FieldValue.arrayUnion(value);
 
 const appId = 'shared-catering-crm-2024-v1';
+const DATA_ROOT = `artifacts/${appId}/public/data`;
+const PROJECT_TASKS_PATH = `${DATA_ROOT}/projectTasks`;
 
 const STATUS_OPTIONS = [
   { value: 'new', label: 'New' },
@@ -109,12 +112,217 @@ const UserIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height
 const ChartIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>;
 const DownloadIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>;
 
+const TASK_STATUS_OPTIONS = [
+  { value: 'not_started', label: '未開始 / Not Started' },
+  { value: 'in_progress', label: '進行中 / In Progress' },
+  { value: 'waiting_client', label: '等客人 / Waiting Client' },
+  { value: 'done', label: '已完成 / Done' },
+  { value: 'blocked', label: '阻塞 / Blocked' },
+];
+
+const TASK_STATUS_COLORS = {
+  not_started: 'bg-gray-600 text-white',
+  in_progress: 'bg-blue-600 text-white',
+  waiting_client: 'bg-indigo-500 text-white',
+  done: 'bg-green-600 text-white',
+  blocked: 'bg-red-600 text-white',
+};
+
+const RISK_LABELS = {
+  green: '正常 / On Track',
+  yellow: '即將到期 / Due Soon',
+  red: '逾期 / Overdue',
+  blue: '等客人 / Waiting Client',
+  gray: '無日期 / No Date',
+};
+
+const RISK_COLORS = {
+  green: 'bg-green-600 text-white',
+  yellow: 'bg-yellow-500 text-black',
+  red: 'bg-red-600 text-white',
+  blue: 'bg-indigo-500 text-white',
+  gray: 'bg-gray-600 text-white',
+};
+
+const PROJECT_TASK_TEMPLATES = {
+  default: [
+    { id: 'confirm_details', name: 'Confirm pax/time/location / 確認人數、時間、地點', serviceType: 'General', offset: -7 },
+    { id: 'create_proposal', name: 'Create menu/proposal / 製作菜單或方案', serviceType: 'Food', offset: -5 },
+    { id: 'client_approval', name: 'Client approve details / 客戶確認內容', serviceType: 'General', offset: -4, defaultStatus: 'waiting_client' },
+    { id: 'collect_payment', name: 'Collect payment / 收款', serviceType: 'Payment', offset: -3 },
+    { id: 'supplier_order', name: 'Place supplier order / 下單與確認供應商', serviceType: 'General', offset: -2 },
+    { id: 'final_confirmation', name: 'Final confirmation / 活動前最終確認', serviceType: 'General', offset: -1 },
+    { id: 'event_day', name: 'Event day / 活動日', serviceType: 'General', offset: 0 },
+  ],
+  yacht: [
+    { id: 'confirm_yacht', name: 'Confirm yacht booking / 確認遊艇預訂', serviceType: 'Venue/Yacht', offset: -10 },
+    { id: 'confirm_route', name: 'Confirm route/time/pax / 確認航線、時間、人數', serviceType: 'Venue/Yacht', offset: -7 },
+    { id: 'confirm_food_drinks', name: 'Confirm food/drinks / 確認餐飲', serviceType: 'Food', offset: -5 },
+    { id: 'collect_payment', name: 'Collect payment / 收款', serviceType: 'Payment', offset: -4 },
+    { id: 'client_reminder', name: 'Send reminder to client / 發送活動提醒', serviceType: 'General', offset: -1 },
+    { id: 'event_day', name: 'Event day / 活動日', serviceType: 'General', offset: 0 },
+  ],
+};
+
+const safeId = (value) => String(value || 'na').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+const dateToInput = (date) => date ? date.toISOString().slice(0, 10) : '';
+const parseDate = (value) => {
+  if (!value) return null;
+  if (value.toDate) return value.toDate();
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+const addDays = (date, days) => {
+  if (!date) return null;
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+};
+const startOfToday = () => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return today;
+};
+const formatDate = (value) => {
+  const date = parseDate(value);
+  return date ? date.toLocaleDateString('en-CA') : 'N/A';
+};
+const getTaskStatusLabel = (value) => TASK_STATUS_OPTIONS.find(option => option.value === value)?.label || '未開始 / Not Started';
+
+const inferServices = (event, customer) => {
+  const text = [
+    event?.eventType,
+    event?.serviceContent,
+    event?.services,
+    event?.notes,
+    event?.refNo,
+    customer?.name,
+  ].filter(Boolean).join(' ').toLowerCase();
+  const services = new Set(['General', 'Payment']);
+  if (/yacht|boat|sail|遊艇/.test(text)) services.add('Venue/Yacht');
+  if (/drink|bar|wine|beer|cocktail|飲/.test(text)) services.add('Drinks');
+  if (/food|menu|餐|菜|catering|bbq/.test(text)) services.add('Food');
+  if (/staff|waiter|crew|人手|侍應/.test(text)) services.add('Staffing');
+  if (!services.has('Food') && !services.has('Drinks') && !services.has('Venue/Yacht')) services.add('Food');
+  return Array.from(services);
+};
+
+const inferEventType = (event, services) => {
+  if (event?.eventType) return event.eventType;
+  if (services.includes('Venue/Yacht')) return 'Yacht Event / 遊艇活動';
+  return 'Corporate/Party Event / 公司或派對活動';
+};
+
+const selectTemplate = (caseItem) => caseItem.services.includes('Venue/Yacht') ? PROJECT_TASK_TEMPLATES.yacht : PROJECT_TASK_TEMPLATES.default;
+
+const buildProjectCases = (customers) => {
+  const cases = [];
+  customers.forEach(customer => {
+    (customer.events || []).forEach((event, eventIndex) => {
+      const eventDate = parseDate(event.eventDate);
+      if (!eventDate) return;
+      const services = inferServices(event, customer);
+      const refNo = event.refNo || `${customer.id}-${eventIndex + 1}`;
+      const caseId = safeId(`${customer.id}_${eventIndex}_${refNo}`);
+      cases.push({
+        id: caseId,
+        customerId: customer.id,
+        customerName: customer.name || 'Unnamed / 未命名',
+        phone: customer.phone || '',
+        address: customer.address || '',
+        customerStatus: customer.status || 'new',
+        eventIndex,
+        eventDate: dateToInput(eventDate),
+        enquiryNo: refNo,
+        eventPrice: Number(event.eventPrice || 0),
+        inquirySource: event.inquirySource || 'other',
+        eventType: inferEventType(event, services),
+        services,
+      });
+    });
+  });
+  return cases.sort((a, b) => parseDate(a.eventDate) - parseDate(b.eventDate));
+};
+
+const buildTemplateTasks = (caseItem) => selectTemplate(caseItem).map(template => {
+  const eventDate = parseDate(caseItem.eventDate);
+  const dueDate = addDays(eventDate, template.offset);
+  const taskDocId = safeId(`${caseItem.id}_${template.id}`);
+  return {
+    id: taskDocId,
+    taskDocId,
+    caseId: caseItem.id,
+    customerId: caseItem.customerId,
+    eventIndex: caseItem.eventIndex,
+    enquiryNo: caseItem.enquiryNo,
+    templateId: template.id,
+    name: template.name,
+    serviceType: template.serviceType,
+    owner: '',
+    plannedStartDate: dateToInput(dueDate),
+    plannedDueDate: dateToInput(dueDate),
+    relativeDayOffset: template.offset,
+    status: template.defaultStatus || 'not_started',
+    notes: '',
+    isAutoGenerated: true,
+    isDateManualOverride: false,
+    isStatusManualOverride: false,
+  };
+});
+
+const mergeTasksForCase = (caseItem, storedTasks) => {
+  const storedByTemplate = {};
+  storedTasks.filter(task => task.caseId === caseItem.id).forEach(task => { storedByTemplate[task.templateId] = task; });
+  return buildTemplateTasks(caseItem).map(templateTask => {
+    const stored = storedByTemplate[templateTask.templateId];
+    if (!stored) return templateTask;
+    const plannedDueDate = stored.isDateManualOverride ? stored.plannedDueDate : templateTask.plannedDueDate;
+    const plannedStartDate = stored.isDateManualOverride ? stored.plannedStartDate : templateTask.plannedStartDate;
+    return { ...templateTask, ...stored, plannedDueDate, plannedStartDate };
+  });
+};
+
+const calculateCaseProgress = (caseItem, tasks) => {
+  const today = startOfToday();
+  const tomorrow = addDays(today, 1);
+  const total = tasks.length;
+  const done = tasks.filter(task => task.status === 'done').length;
+  const incomplete = tasks.filter(task => task.status !== 'done');
+  const overdue = incomplete.filter(task => {
+    const due = parseDate(task.plannedDueDate);
+    return due && due < today;
+  });
+  const nextTask = incomplete
+    .slice()
+    .sort((a, b) => (parseDate(a.plannedDueDate)?.getTime() || Infinity) - (parseDate(b.plannedDueDate)?.getTime() || Infinity))[0];
+  const nextDue = parseDate(nextTask?.plannedDueDate);
+  let riskStatus = 'green';
+  if (!parseDate(caseItem.eventDate)) riskStatus = 'gray';
+  else if (overdue.length > 0) riskStatus = 'red';
+  else if (nextTask?.status === 'waiting_client') riskStatus = 'blue';
+  else if (nextDue && nextDue <= tomorrow) riskStatus = 'yellow';
+  const eventDate = parseDate(caseItem.eventDate);
+  const daysLeft = eventDate ? Math.ceil((eventDate - today) / 86400000) : null;
+  return {
+    progressPercent: total ? Math.round((done / total) * 100) : 0,
+    doneCount: done,
+    totalTasks: total,
+    overdueCount: overdue.length,
+    nextAction: nextTask?.name || 'All tasks done / 全部完成',
+    nextDueDate: nextTask?.plannedDueDate || '',
+    riskStatus,
+    daysLeft,
+  };
+};
+
 function App() {
   const [db, setDb] = React.useState(null);
   const [isReady, setIsReady] = React.useState(false);
   const [view, setView] = React.useState('loading');
   const [customers, setCustomers] = React.useState([]);
+  const [projectTasks, setProjectTasks] = React.useState([]);
   const [selectedCustomerId, setSelectedCustomerId] = React.useState(null);
+  const [selectedCaseId, setSelectedCaseId] = React.useState(null);
   const [searchTerm, setSearchTerm] = React.useState('');
   const [statusFilter, setStatusFilter] = React.useState('all');
   const [error, setError] = React.useState(null);
@@ -129,7 +337,7 @@ function App() {
         if (!auth.currentUser) await signInAnonymously(auth);
         setDb(firestoreDb);
         setIsReady(true);
-        setView('list');
+        setView('home');
       } catch (e) {
         console.error("Firebase Initialization Error:", e);
         setError("Application initialization failed.");
@@ -153,9 +361,29 @@ function App() {
     return () => unsubscribe();
   }, [isReady, db]);
 
+  React.useEffect(() => {
+    if (!isReady || !db) return;
+    const qref = query(collection(db, PROJECT_TASKS_PATH));
+    const unsubscribe = onSnapshot(qref, (querySnapshot) => {
+      setProjectTasks(querySnapshot.docs.map(doc => ({ id: doc.id, taskDocId: doc.id, ...doc.data() })));
+    }, (err) => {
+      console.error("Error fetching project tasks:", err);
+      setProjectTasks([]);
+    });
+    return () => unsubscribe();
+  }, [isReady, db]);
+
   const navigateTo = (viewName, customerId = null) => {
     setSelectedCustomerId(customerId);
     setView(viewName);
+  };
+
+  const projectCases = React.useMemo(() => buildProjectCases(customers), [customers]);
+  const selectedCase = React.useMemo(() => projectCases.find(caseItem => caseItem.id === selectedCaseId), [projectCases, selectedCaseId]);
+
+  const navigateToCase = (caseId) => {
+    setSelectedCaseId(caseId);
+    setView('project_detail');
   };
 
   const sortedCustomers = React.useMemo(() => {
@@ -225,8 +453,11 @@ function App() {
     switch (view) {
       case 'loading': return <div className="text-center p-10">Loading...</div>;
       case 'error': return <div className="text-center p-10 text-red-400">{error}</div>;
+      case 'home': return <HomeScreen setView={setView} customers={customers} projectCases={projectCases} projectTasks={projectTasks} />;
       case 'add': return <AddCustomerForm db={db} onBack={() => navigateTo('list')} />;
       case 'detail': return <CustomerDetail db={db} customerId={selectedCustomerId} onBack={() => navigateTo('list')} />;
+      case 'project_board': return <ProjectBoard db={db} customers={customers} cases={projectCases} projectTasks={projectTasks} onSelectCase={navigateToCase} />;
+      case 'project_detail': return <ProjectCaseDetail db={db} caseItem={selectedCase} projectTasks={projectTasks} onBack={() => setView('project_board')} />;
       case 'dashboard': return <AnalyticsDashboard customers={customers} navigateTo={navigateTo} />;
       case 'list':
       default:
@@ -257,14 +488,326 @@ function App() {
     <div className="bg-gray-900 text-white min-h-screen font-sans">
       <header className="bg-gray-800/50 backdrop-blur-sm shadow-md sticky top-0 z-10">
         <div className="container mx-auto px-4 py-3 flex justify-between items-center">
-          <h1 className="text-2xl font-bold">Customer Relationship Management</h1>
-          <button onClick={() => setView(view === 'dashboard' ? 'list' : 'dashboard')} className="flex items-center gap-2 text-blue-400 hover:text-blue-300">
-            {view === 'dashboard' ? <ArrowLeftIcon /> : <ChartIcon />}
-            {view === 'dashboard' ? 'Back to List' : 'Analytics'}
-          </button>
+          <button onClick={() => setView('home')} className="text-2xl font-bold text-left hover:text-blue-300">CRM Operations / 客戶與專案管理</button>
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <button onClick={() => setView('list')} className="text-blue-400 hover:text-blue-300">資料輸入 / Intake</button>
+            <button onClick={() => setView('project_board')} className="text-blue-400 hover:text-blue-300">進度管理 / Project Board</button>
+          </div>
         </div>
       </header>
       <main className="container mx-auto p-4">{renderContent()}</main>
+    </div>
+  );
+}
+
+function HomeScreen({ setView, customers, projectCases, projectTasks }) {
+  const summaries = projectCases.map(caseItem => calculateCaseProgress(caseItem, mergeTasksForCase(caseItem, projectTasks)));
+  const redCount = summaries.filter(summary => summary.riskStatus === 'red').length;
+  const yellowCount = summaries.filter(summary => summary.riskStatus === 'yellow').length;
+  const waitingCount = summaries.filter(summary => summary.riskStatus === 'blue').length;
+
+  return (
+    <div className="max-w-6xl mx-auto py-8">
+      <div className="mb-8">
+        <h2 className="text-3xl font-bold mb-2">工作入口 / Work Hub</h2>
+        <p className="text-gray-400">快速輸入新資料，或進入 Project Board 查看所有活動進度。</p>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <button onClick={() => setView('list')} className="text-left bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg p-6 transition">
+          <div className="flex items-center gap-3 mb-4 text-blue-400"><UserPlusIcon /><span className="text-2xl font-bold">資料輸入 / CRM Intake</span></div>
+          <p className="text-gray-300 mb-6">手動新增客戶、查看既有客戶、之後會加入截圖匯入 / Import Screenshot。</p>
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <StatPill label="客戶 / Customers" value={customers.length} />
+            <StatPill label="Case / Events" value={projectCases.length} />
+          </div>
+        </button>
+        <button onClick={() => setView('project_board')} className="text-left bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg p-6 transition">
+          <div className="flex items-center gap-3 mb-4 text-green-400"><ChartIcon /><span className="text-2xl font-bold">進度管理 / Project Board</span></div>
+          <p className="text-gray-300 mb-6">查看甘特圖、逾期任務、下一步、付款與活動前準備狀態。</p>
+          <div className="grid grid-cols-3 gap-3 text-sm">
+            <StatPill label="逾期 / Red" value={redCount} />
+            <StatPill label="將到期 / Yellow" value={yellowCount} />
+            <StatPill label="等客人 / Waiting" value={waitingCount} />
+          </div>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function StatPill({ label, value }) {
+  return (
+    <div className="bg-gray-900/70 rounded-lg p-3">
+      <div className="text-gray-400">{label}</div>
+      <div className="text-2xl font-bold text-white">{value}</div>
+    </div>
+  );
+}
+
+async function ensureProjectTasks(db, cases, projectTasks) {
+  if (!db || cases.length === 0) return;
+  const existingIds = new Set(projectTasks.map(task => task.taskDocId || task.id));
+  const writes = [];
+  cases.slice(0, 100).forEach(caseItem => {
+    buildTemplateTasks(caseItem).forEach(task => {
+      if (!existingIds.has(task.taskDocId)) {
+        writes.push(setDoc(doc(db, `${PROJECT_TASKS_PATH}/${task.taskDocId}`), {
+          ...task,
+          createdAt: Timestamp.now(),
+          lastUpdatedAt: Timestamp.now(),
+        }, { merge: true }));
+      }
+    });
+  });
+  await Promise.all(writes);
+}
+
+function ProjectBoard({ db, customers, cases, projectTasks, onSelectCase }) {
+  const [riskFilter, setRiskFilter] = React.useState('all');
+  const [sortMode, setSortMode] = React.useState('risk');
+  const [isSyncing, setIsSyncing] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!db || cases.length === 0) return;
+    const run = async () => {
+      setIsSyncing(true);
+      try { await ensureProjectTasks(db, cases, projectTasks); }
+      catch (err) { console.error("Project task sync failed:", err); }
+      finally { setIsSyncing(false); }
+    };
+    run();
+  }, [db, cases.length]);
+
+  const rows = React.useMemo(() => {
+    const riskRank = { red: 0, blue: 1, yellow: 2, green: 3, gray: 4 };
+    return cases.map(caseItem => {
+      const tasks = mergeTasksForCase(caseItem, projectTasks);
+      const summary = calculateCaseProgress(caseItem, tasks);
+      return { caseItem, tasks, summary };
+    }).filter(row => riskFilter === 'all' || row.summary.riskStatus === riskFilter)
+      .sort((a, b) => {
+        if (sortMode === 'eventDate') return (parseDate(a.caseItem.eventDate)?.getTime() || Infinity) - (parseDate(b.caseItem.eventDate)?.getTime() || Infinity);
+        if (sortMode === 'overdue') return b.summary.overdueCount - a.summary.overdueCount;
+        if (sortMode === 'progress') return a.summary.progressPercent - b.summary.progressPercent;
+        return riskRank[a.summary.riskStatus] - riskRank[b.summary.riskStatus] || (parseDate(a.caseItem.eventDate)?.getTime() || Infinity) - (parseDate(b.caseItem.eventDate)?.getTime() || Infinity);
+      });
+  }, [cases, projectTasks, riskFilter, sortMode]);
+
+  const boardStats = React.useMemo(() => {
+    const allRows = cases.map(caseItem => calculateCaseProgress(caseItem, mergeTasksForCase(caseItem, projectTasks)));
+    return {
+      total: allRows.length,
+      red: allRows.filter(summary => summary.riskStatus === 'red').length,
+      yellow: allRows.filter(summary => summary.riskStatus === 'yellow').length,
+      blue: allRows.filter(summary => summary.riskStatus === 'blue').length,
+      thisWeek: allRows.filter(summary => summary.daysLeft !== null && summary.daysLeft >= 0 && summary.daysLeft <= 7).length,
+    };
+  }, [cases, projectTasks]);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+        <div>
+          <h2 className="text-3xl font-bold">進度管理 / Project Board</h2>
+          <p className="text-gray-400 mt-1">Analytics 已整合在這裡，先看風險，再點進 case 看完整甘特圖。</p>
+        </div>
+        <div className="flex flex-wrap gap-3">
+          <select value={riskFilter} onChange={e => setRiskFilter(e.target.value)} className="bg-gray-800 border border-gray-700 rounded-lg p-2">
+            <option value="all">全部 / All</option>
+            <option value="red">逾期 / Overdue</option>
+            <option value="yellow">即將到期 / Due Soon</option>
+            <option value="blue">等客人 / Waiting Client</option>
+            <option value="green">正常 / On Track</option>
+          </select>
+          <select value={sortMode} onChange={e => setSortMode(e.target.value)} className="bg-gray-800 border border-gray-700 rounded-lg p-2">
+            <option value="risk">最危險 / Risk First</option>
+            <option value="eventDate">活動最近 / Event Date</option>
+            <option value="overdue">逾期最多 / Overdue Count</option>
+            <option value="progress">進度最低 / Lowest Progress</option>
+          </select>
+          <button onClick={() => ensureProjectTasks(db, cases, projectTasks)} className="bg-blue-600 hover:bg-blue-700 rounded-lg px-4 py-2">同步任務 / Sync Tasks</button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <StatPill label="Cases" value={boardStats.total} />
+        <StatPill label="逾期 / Red" value={boardStats.red} />
+        <StatPill label="即將到期 / Yellow" value={boardStats.yellow} />
+        <StatPill label="等客人 / Waiting" value={boardStats.blue} />
+        <StatPill label="7日內活動 / This Week" value={boardStats.thisWeek} />
+      </div>
+      {isSyncing && <p className="text-sm text-blue-300">正在同步時間線任務 / Syncing timeline tasks...</p>}
+
+      <div className="bg-gray-800 rounded-lg overflow-hidden border border-gray-700">
+        <div className="grid grid-cols-12 gap-3 px-4 py-3 text-xs uppercase text-gray-400 bg-gray-900/70">
+          <div className="col-span-3">Case / 客戶</div>
+          <div className="col-span-2">活動日期 / Event</div>
+          <div className="col-span-2">進度 / Progress</div>
+          <div className="col-span-2">風險 / Risk</div>
+          <div className="col-span-3">下一步 / Next Action</div>
+        </div>
+        {rows.length === 0 ? (
+          <p className="p-6 text-gray-400">No project cases yet / 目前沒有可管理的 case。請先建立含 Event Date 的 event。</p>
+        ) : rows.map(row => (
+          <button key={row.caseItem.id} onClick={() => onSelectCase(row.caseItem.id)} className="w-full text-left grid grid-cols-12 gap-3 px-4 py-4 border-t border-gray-700 hover:bg-gray-700/60 transition">
+            <div className="col-span-12 md:col-span-3">
+              <div className="font-semibold text-blue-300">{row.caseItem.customerName}</div>
+              <div className="text-xs text-gray-400">{row.caseItem.enquiryNo} · {row.caseItem.eventType}</div>
+              <div className="text-xs text-gray-500">{row.caseItem.services.join(', ')}</div>
+            </div>
+            <div className="col-span-4 md:col-span-2">
+              <div>{formatDate(row.caseItem.eventDate)}</div>
+              <div className="text-xs text-gray-400">{row.summary.daysLeft === null ? 'N/A' : `${row.summary.daysLeft} days left / 剩 ${row.summary.daysLeft} 天`}</div>
+            </div>
+            <div className="col-span-4 md:col-span-2">
+              <ProgressBar value={row.summary.progressPercent} />
+              <div className="text-xs text-gray-400 mt-1">{row.summary.doneCount}/{row.summary.totalTasks} tasks</div>
+            </div>
+            <div className="col-span-4 md:col-span-2">
+              <span className={`inline-block px-2 py-1 rounded-full text-xs font-bold ${RISK_COLORS[row.summary.riskStatus]}`}>{RISK_LABELS[row.summary.riskStatus]}</span>
+              <div className="text-xs text-gray-400 mt-1">逾期 / Overdue: {row.summary.overdueCount}</div>
+            </div>
+            <div className="col-span-12 md:col-span-3">
+              <div className="text-sm">{row.summary.nextAction}</div>
+              <div className="text-xs text-gray-400">截止 / Due: {formatDate(row.summary.nextDueDate)}</div>
+              <MiniTimeline tasks={row.tasks} />
+            </div>
+          </button>
+        ))}
+      </div>
+
+      <AnalyticsDashboard customers={customers} navigateTo={() => {}} compact />
+    </div>
+  );
+}
+
+function ProgressBar({ value }) {
+  return (
+    <div className="w-full bg-gray-700 rounded-full h-3 overflow-hidden">
+      <div className="bg-blue-500 h-3 rounded-full" style={{ width: `${Math.max(0, Math.min(100, value))}%` }}></div>
+    </div>
+  );
+}
+
+function MiniTimeline({ tasks }) {
+  return (
+    <div className="flex items-center gap-1 mt-2">
+      {tasks.map(task => (
+        <span key={task.taskDocId} title={`${task.name}: ${getTaskStatusLabel(task.status)}`} className={`h-2 flex-1 rounded ${task.status === 'done' ? 'bg-green-500' : task.status === 'waiting_client' ? 'bg-indigo-500' : task.status === 'blocked' ? 'bg-red-500' : 'bg-gray-600'}`}></span>
+      ))}
+    </div>
+  );
+}
+
+function ProjectCaseDetail({ db, caseItem, projectTasks, onBack }) {
+  if (!caseItem) return <div className="text-center p-10 text-gray-400">Case not found / 找不到 case。</div>;
+  const tasks = mergeTasksForCase(caseItem, projectTasks);
+  const summary = calculateCaseProgress(caseItem, tasks);
+  const eventDate = parseDate(caseItem.eventDate);
+  const timelineStart = addDays(eventDate, -10) || startOfToday();
+  const timelineEnd = eventDate || addDays(timelineStart, 10);
+  const totalDays = Math.max(1, Math.ceil((timelineEnd - timelineStart) / 86400000));
+
+  const updateTask = async (task, patch) => {
+    await setDoc(doc(db, `${PROJECT_TASKS_PATH}/${task.taskDocId}`), {
+      ...patch,
+      caseId: caseItem.id,
+      customerId: caseItem.customerId,
+      eventIndex: caseItem.eventIndex,
+      enquiryNo: caseItem.enquiryNo,
+      templateId: task.templateId,
+      lastUpdatedAt: Timestamp.now(),
+    }, { merge: true });
+  };
+
+  const markDone = async (task) => {
+    await updateTask(task, {
+      status: 'done',
+      isStatusManualOverride: true,
+      actualCompletedAt: Timestamp.now(),
+    });
+  };
+
+  return (
+    <div className="max-w-7xl mx-auto space-y-6">
+      <div className="flex items-center justify-between gap-4">
+        <button onClick={onBack} className="flex items-center gap-2 text-blue-400 hover:text-blue-300"><ArrowLeftIcon /> 返回 / Back</button>
+        <span className={`px-3 py-1 rounded-full text-sm font-bold ${RISK_COLORS[summary.riskStatus]}`}>{RISK_LABELS[summary.riskStatus]}</span>
+      </div>
+
+      <div className="bg-gray-800 rounded-lg p-5 border border-gray-700">
+        <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-5">
+          <div>
+            <h2 className="text-3xl font-bold text-blue-300">{caseItem.customerName}</h2>
+            <p className="text-gray-300 mt-1">{caseItem.eventType} · {caseItem.enquiryNo}</p>
+            <p className="text-gray-400 text-sm mt-1">{caseItem.services.join(', ')}</p>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 min-w-full lg:min-w-[560px]">
+            <StatPill label="活動日期 / Event Date" value={formatDate(caseItem.eventDate)} />
+            <StatPill label="剩餘天數 / Days Left" value={summary.daysLeft ?? 'N/A'} />
+            <StatPill label="進度 / Progress" value={`${summary.progressPercent}%`} />
+            <StatPill label="逾期 / Overdue" value={summary.overdueCount} />
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-gray-800 rounded-lg p-5 border border-gray-700">
+        <h3 className="text-xl font-semibold mb-4">Project Timeline / 甘特圖</h3>
+        <div className="overflow-x-auto">
+          <div className="min-w-[900px]">
+            <div className="grid gap-4 text-xs text-gray-400 mb-2" style={{ gridTemplateColumns: '260px 1fr' }}>
+              <div>任務 / Task</div>
+              <div className="flex justify-between">
+                {[-10, -7, -5, -4, -3, -2, -1, 0].map(offset => <span key={offset}>{offset === 0 ? 'T' : `T${offset}`}</span>)}
+              </div>
+            </div>
+            <div className="space-y-3">
+              {tasks.map(task => {
+                const due = parseDate(task.plannedDueDate);
+                const left = due ? Math.max(0, Math.min(100, ((due - timelineStart) / 86400000 / totalDays) * 100)) : 0;
+                const isOverdue = due && due < startOfToday() && task.status !== 'done';
+                return (
+                  <div key={task.taskDocId} className="grid gap-4 items-center" style={{ gridTemplateColumns: '260px 1fr' }}>
+                    <div>
+                      <div className="font-medium text-sm">{task.name}</div>
+                      <div className="text-xs text-gray-400">{task.serviceType} · Due {formatDate(task.plannedDueDate)}</div>
+                    </div>
+                    <div className="relative h-8 bg-gray-900 rounded">
+                      <div className={`absolute top-2 h-4 rounded ${task.status === 'done' ? 'bg-green-500' : isOverdue ? 'bg-red-500' : task.status === 'waiting_client' ? 'bg-indigo-500' : 'bg-blue-500'}`} style={{ left: `${left}%`, width: '5%' }}></div>
+                      {task.actualCompletedAt && <div className="absolute top-0 text-green-300 text-xs" style={{ left: `${left}%` }}>✓</div>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-gray-800 rounded-lg p-5 border border-gray-700">
+        <h3 className="text-xl font-semibold mb-4">任務清單 / Task Checklist</h3>
+        <div className="space-y-3">
+          {tasks.map(task => {
+            const due = parseDate(task.plannedDueDate);
+            const isOverdue = due && due < startOfToday() && task.status !== 'done';
+            return (
+              <div key={task.taskDocId} className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-center bg-gray-900/60 rounded-lg p-3">
+                <div className="lg:col-span-4">
+                  <div className="font-medium">{task.name}</div>
+                  <div className="text-xs text-gray-400">{task.serviceType} · {isOverdue ? '逾期 / Overdue' : `Due ${formatDate(task.plannedDueDate)}`}</div>
+                </div>
+                <select value={task.status || 'not_started'} onChange={e => updateTask(task, { status: e.target.value, isStatusManualOverride: true, actualCompletedAt: e.target.value === 'done' ? Timestamp.now() : null })} className="lg:col-span-2 bg-gray-800 border border-gray-700 rounded p-2">
+                  {TASK_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+                <input type="date" value={task.plannedDueDate || ''} onChange={e => updateTask(task, { plannedDueDate: e.target.value, plannedStartDate: e.target.value, isDateManualOverride: true })} className="lg:col-span-2 bg-gray-800 border border-gray-700 rounded p-2" />
+                <input type="text" value={task.owner || ''} onChange={e => updateTask(task, { owner: e.target.value })} placeholder="負責人 / Owner" className="lg:col-span-2 bg-gray-800 border border-gray-700 rounded p-2" />
+                <button onClick={() => markDone(task)} className="lg:col-span-1 bg-green-600 hover:bg-green-700 rounded p-2">Done</button>
+                <input type="text" value={task.notes || ''} onChange={e => updateTask(task, { notes: e.target.value })} placeholder="備註 / Notes" className="lg:col-span-12 bg-gray-800 border border-gray-700 rounded p-2" />
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }

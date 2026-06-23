@@ -78,10 +78,12 @@ exports.analyzeScreenshotIntake = onCall(
       "Services should use short English labels like Food, Drinks, Venue/Yacht, Staffing, Payment, General.",
     ].join("\n");
 
+    const apiKey = openaiApiKey.value().trim();
+
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${openaiApiKey.value()}`,
+        Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({

@@ -11,6 +11,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-functions-compat.js"></script>
 </head>
 <body class="bg-gray-900 text-white min-h-screen">
   <div id="root"></div>
@@ -32,6 +33,8 @@ const signInAnonymously = (auth) => auth.signInAnonymously();
 const setPersistence = (auth, persistence) => auth.setPersistence(persistence);
 const browserLocalPersistence = firebase.auth.Auth.Persistence.LOCAL;
 const getFirestore = () => firebase.firestore();
+const getFunctions = () => firebase.functions();
+const httpsCallable = (functionsApi, name) => functionsApi.httpsCallable(name);
 const collection = (db, path) => db.collection(path);
 const doc = (db, path) => db.doc(path);
 const addDoc = (collectionRef, data) => collectionRef.add(data);
@@ -45,6 +48,8 @@ const arrayUnion = (value) => firebase.firestore.FieldValue.arrayUnion(value);
 const appId = 'shared-catering-crm-2024-v1';
 const DATA_ROOT = `artifacts/${appId}/public/data`;
 const PROJECT_TASKS_PATH = `${DATA_ROOT}/projectTasks`;
+const CUSTOMERS_PATH = `${DATA_ROOT}/customers`;
+const INTAKE_SUBMISSIONS_PATH = `${DATA_ROOT}/intakeSubmissions`;
 
 const STATUS_OPTIONS = [
   { value: 'new', label: 'New' },
@@ -317,6 +322,7 @@ const calculateCaseProgress = (caseItem, tasks) => {
 
 function App() {
   const [db, setDb] = React.useState(null);
+  const [functionsApi, setFunctionsApi] = React.useState(null);
   const [isReady, setIsReady] = React.useState(false);
   const [view, setView] = React.useState('loading');
   const [customers, setCustomers] = React.useState([]);
@@ -332,10 +338,12 @@ function App() {
       try {
         const app = initializeApp(firebaseConfig);
         const firestoreDb = getFirestore(app);
+        const callableFunctions = getFunctions(app);
         const auth = getAuth(app);
         await setPersistence(auth, browserLocalPersistence);
         if (!auth.currentUser) await signInAnonymously(auth);
         setDb(firestoreDb);
+        setFunctionsApi(callableFunctions);
         setIsReady(true);
         setView('home');
       } catch (e) {
@@ -349,7 +357,7 @@ function App() {
 
   React.useEffect(() => {
     if (!isReady || !db) return;
-    const customersCollectionPath = `artifacts/${appId}/public/data/customers`;
+    const customersCollectionPath = CUSTOMERS_PATH;
     const qref = query(collection(db, customersCollectionPath));
     const unsubscribe = onSnapshot(qref, (querySnapshot) => {
       const customersData = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -455,6 +463,7 @@ function App() {
       case 'error': return <div className="text-center p-10 text-red-400">{error}</div>;
       case 'home': return <HomeScreen setView={setView} customers={customers} projectCases={projectCases} projectTasks={projectTasks} />;
       case 'add': return <AddCustomerForm db={db} onBack={() => navigateTo('list')} />;
+      case 'screenshot_intake': return <ScreenshotIntake db={db} functionsApi={functionsApi} customers={customers} onBack={() => navigateTo('list')} onCreated={(customerId) => navigateTo('detail', customerId)} />;
       case 'detail': return <CustomerDetail db={db} customerId={selectedCustomerId} onBack={() => navigateTo('list')} />;
       case 'project_board': return <ProjectBoard db={db} customers={customers} cases={projectCases} projectTasks={projectTasks} onSelectCase={navigateToCase} />;
       case 'project_detail': return <ProjectCaseDetail db={db} caseItem={selectedCase} projectTasks={projectTasks} onBack={() => setView('project_board')} />;
@@ -475,6 +484,7 @@ function App() {
                   {STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
               </div>
+              <button onClick={() => setView('screenshot_intake')} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg"><PlusCircleIcon /><span>Import Screenshot / 截圖匯入</span></button>
               <button onClick={handleExportAll} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg"><DownloadIcon /><span>Export All</span></button>
               <button onClick={() => navigateTo('add')} className="w-full sm:w-auto flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg"><UserPlusIcon /><span>Add Customer</span></button>
             </div>
@@ -916,6 +926,237 @@ function AddCustomerForm({ db, onBack }) {
           <button type="submit" disabled={isSaving} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition disabled:bg-gray-500">{isSaving ? 'Saving...' : 'Save Customer'}</button>
         </div>
       </form>
+    </div>
+  );
+}
+
+const normalizePhone = (value) => String(value || '').replace(/\D/g, '');
+const splitServices = (value) => String(value || '').split(/[,，\n]/).map(item => item.trim()).filter(Boolean);
+
+const emptyIntakeDraft = () => ({
+  name: '',
+  phone: '',
+  address: '',
+  eventDate: '',
+  enquiryNo: '',
+  eventType: '',
+  servicesText: '',
+  pax: '',
+  paymentStatus: '',
+  eventPrice: '',
+  notes: '',
+  confidence: 0,
+  warnings: [],
+});
+
+const coerceIntakeDraft = (result) => {
+  const customer = result?.customer || {};
+  const caseData = result?.case || {};
+  return {
+    name: customer.name || '',
+    phone: customer.phone || '',
+    address: customer.address || '',
+    eventDate: caseData.eventDate || '',
+    enquiryNo: caseData.enquiryNo || '',
+    eventType: caseData.eventType || '',
+    servicesText: Array.isArray(caseData.services) ? caseData.services.join(', ') : (caseData.services || ''),
+    pax: caseData.pax || '',
+    paymentStatus: caseData.paymentStatus || '',
+    eventPrice: caseData.eventPrice ? String(caseData.eventPrice) : '',
+    notes: caseData.notes || '',
+    confidence: Number(result?.confidence?.overall || result?.confidence || 0),
+    warnings: Array.isArray(result?.warnings) ? result.warnings : [],
+  };
+};
+
+function ScreenshotIntake({ db, functionsApi, customers, onBack, onCreated }) {
+  const [draft, setDraft] = React.useState(emptyIntakeDraft());
+  const [imageDataUrl, setImageDataUrl] = React.useState('');
+  const [fileMeta, setFileMeta] = React.useState(null);
+  const [isAnalyzing, setIsAnalyzing] = React.useState(false);
+  const [isSaving, setIsSaving] = React.useState(false);
+  const [message, setMessage] = React.useState('');
+  const [rawResult, setRawResult] = React.useState(null);
+
+  const duplicateMatches = React.useMemo(() => {
+    const phone = normalizePhone(draft.phone);
+    const name = draft.name.trim().toLowerCase();
+    if (!phone && !name) return [];
+    return customers.filter(customer => {
+      const customerPhone = normalizePhone(customer.phone);
+      const phoneMatch = phone && customerPhone && (customerPhone.includes(phone) || phone.includes(customerPhone));
+      const nameMatch = name && String(customer.name || '').trim().toLowerCase() === name;
+      return phoneMatch || nameMatch;
+    }).slice(0, 5);
+  }, [customers, draft.phone, draft.name]);
+
+  const updateDraft = (field, value) => setDraft(prev => ({ ...prev, [field]: value }));
+
+  const handleFileChange = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setMessage('Please upload an image file / 請上傳圖片檔');
+      return;
+    }
+    if (file.size > 6 * 1024 * 1024) {
+      setMessage('Image is too large. Please keep it under 6MB / 圖片請小於 6MB');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setImageDataUrl(String(reader.result || ''));
+      setFileMeta({ name: file.name, type: file.type, size: file.size });
+      setMessage('Image loaded. You can run AI Analyze or fill the draft manually / 圖片已載入，可按 AI 解析或手動填寫');
+      setRawResult(null);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleAnalyze = async () => {
+    if (!imageDataUrl || !functionsApi || isAnalyzing) return;
+    setIsAnalyzing(true);
+    setMessage('');
+    try {
+      const analyzeScreenshotIntake = httpsCallable(functionsApi, 'analyzeScreenshotIntake');
+      const response = await analyzeScreenshotIntake({
+        imageDataUrl,
+        fileName: fileMeta?.name || 'screenshot',
+        mimeType: fileMeta?.type || 'image/png',
+      });
+      const result = response.data || {};
+      setRawResult(result);
+      setDraft(prev => ({ ...prev, ...coerceIntakeDraft(result) }));
+      setMessage('AI draft created. Please review before saving / AI 草稿已建立，請確認後再儲存');
+    } catch (error) {
+      console.error('Screenshot analysis failed:', error);
+      setMessage('AI analyzer is not deployed yet or returned an error. You can still save manually / AI 後端尚未部署或解析失敗，仍可手動建立資料');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handleSave = async (event) => {
+    event.preventDefault();
+    if (!draft.name.trim() || isSaving) return;
+    setIsSaving(true);
+    setMessage('');
+    try {
+      const services = splitServices(draft.servicesText);
+      const eventRecord = {
+        eventDate: draft.eventDate || '',
+        refNo: draft.enquiryNo || `IMG-${Date.now()}`,
+        inquirySource: 'screenshot',
+        eventPrice: Number(draft.eventPrice || 0),
+        eventType: draft.eventType || '',
+        services,
+        pax: draft.pax || '',
+        paymentStatus: draft.paymentStatus || '',
+        notes: draft.notes || '',
+        source: 'screenshot',
+        loggedAt: Timestamp.now(),
+      };
+      const customerRef = await addDoc(collection(db, CUSTOMERS_PATH), {
+        name: draft.name.trim(),
+        phone: draft.phone.trim(),
+        address: draft.address.trim(),
+        status: 'new',
+        intakeStatus: 'unreviewed',
+        source: 'screenshot',
+        possibleDuplicateIds: duplicateMatches.map(match => match.id),
+        events: draft.eventDate ? [eventRecord] : [],
+        createdAt: Timestamp.now(),
+      });
+      await addDoc(collection(db, INTAKE_SUBMISSIONS_PATH), {
+        source: 'screenshot',
+        status: 'confirmed',
+        createdCustomerId: customerRef.id,
+        possibleDuplicateIds: duplicateMatches.map(match => match.id),
+        extractedDraft: draft,
+        rawAiResult: rawResult || null,
+        fileMeta: fileMeta || null,
+        createdAt: Timestamp.now(),
+      });
+      onCreated(customerRef.id);
+    } catch (error) {
+      console.error('Screenshot intake save failed:', error);
+      setMessage(`Save failed / 儲存失敗: ${error?.message || error}`);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto">
+      <div className="flex items-center mb-6">
+        <button onClick={onBack} className="mr-4 p-2 rounded-full hover:bg-gray-700 transition"><ArrowLeftIcon /></button>
+        <div>
+          <h2 className="text-3xl font-bold text-purple-300">Screenshot Intake / 截圖匯入</h2>
+          <p className="text-gray-400 text-sm">Upload a chat or enquiry screenshot, review the draft, then create a new CRM customer / 上傳對話或詢價截圖，確認草稿後建立新客戶資料</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <section className="bg-gray-800 border border-gray-700 rounded-lg p-5">
+          <h3 className="text-xl font-semibold mb-4">1. Upload image / 上傳圖片</h3>
+          <input type="file" accept="image/*" onChange={handleFileChange} className="block w-full text-sm text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-purple-600 file:text-white hover:file:bg-purple-700" />
+          <div className="mt-4 min-h-64 bg-gray-900 border border-gray-700 rounded-lg flex items-center justify-center overflow-hidden">
+            {imageDataUrl ? (
+              <img src={imageDataUrl} alt="Uploaded screenshot preview" className="max-h-96 w-full object-contain" />
+            ) : (
+              <p className="text-gray-500">No screenshot selected / 尚未選擇截圖</p>
+            )}
+          </div>
+          <button type="button" onClick={handleAnalyze} disabled={!imageDataUrl || isAnalyzing} className="mt-4 w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg">
+            {isAnalyzing ? 'Analyzing... / 解析中...' : 'AI Analyze / AI 解析'}
+          </button>
+          {message && <p className="mt-3 text-sm text-yellow-300 whitespace-pre-line">{message}</p>}
+        </section>
+
+        <form onSubmit={handleSave} className="bg-gray-800 border border-gray-700 rounded-lg p-5 space-y-4">
+          <h3 className="text-xl font-semibold">2. Review draft / 確認草稿</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <TextInput label="Customer name / 客戶名稱" value={draft.name} onChange={value => updateDraft('name', value)} required />
+            <TextInput label="Phone / 電話" value={draft.phone} onChange={value => updateDraft('phone', value)} />
+            <TextInput label="Address / 地址" value={draft.address} onChange={value => updateDraft('address', value)} className="sm:col-span-2" />
+            <TextInput label="Event date / 活動日期" type="date" value={draft.eventDate} onChange={value => updateDraft('eventDate', value)} />
+            <TextInput label="Enquiry No / 詢價編號" value={draft.enquiryNo} onChange={value => updateDraft('enquiryNo', value)} />
+            <TextInput label="Event type / 活動類型" value={draft.eventType} onChange={value => updateDraft('eventType', value)} />
+            <TextInput label="Services / 服務項目" value={draft.servicesText} onChange={value => updateDraft('servicesText', value)} placeholder="Food, Drinks, Yacht" />
+            <TextInput label="Pax / 人數" value={draft.pax} onChange={value => updateDraft('pax', value)} />
+            <TextInput label="Payment status / 付款狀態" value={draft.paymentStatus} onChange={value => updateDraft('paymentStatus', value)} />
+            <TextInput label="Event price / 活動金額" type="number" value={draft.eventPrice} onChange={value => updateDraft('eventPrice', value)} />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-1">Notes / 備註</label>
+            <textarea value={draft.notes} onChange={event => updateDraft('notes', event.target.value)} rows="4" className="w-full bg-gray-700 border border-gray-600 rounded-lg p-2" />
+          </div>
+
+          {duplicateMatches.length > 0 && (
+            <div className="bg-yellow-900/40 border border-yellow-700 rounded-lg p-3 text-sm">
+              <div className="font-semibold text-yellow-200 mb-2">Possible duplicates / 可能是同一位客戶</div>
+              {duplicateMatches.map(match => <div key={match.id} className="text-yellow-100">{match.name || 'Unnamed'} - {match.phone || 'No phone'}</div>)}
+              <p className="text-yellow-300 mt-2">This will still create a new customer first. You can merge later / 目前仍會先建立新客戶，之後可再合併</p>
+            </div>
+          )}
+
+          {draft.confidence > 0 && <p className="text-sm text-gray-400">AI confidence / AI 信心值: {Math.round(draft.confidence * 100)}%</p>}
+          {draft.warnings.length > 0 && <p className="text-sm text-yellow-300">Warnings / 注意: {draft.warnings.join('; ')}</p>}
+
+          <button type="submit" disabled={!draft.name.trim() || isSaving} className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg">
+            {isSaving ? 'Saving... / 儲存中...' : 'Create New Customer / 建立新客戶'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function TextInput({ label, value, onChange, type = 'text', required = false, placeholder = '', className = '' }) {
+  return (
+    <div className={className}>
+      <label className="block text-sm font-medium text-gray-300 mb-1">{label}</label>
+      <input type={type} value={value} required={required} placeholder={placeholder} onChange={event => onChange(event.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-lg p-2" />
     </div>
   );
 }

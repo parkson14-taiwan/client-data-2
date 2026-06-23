@@ -525,7 +525,11 @@ function HomeScreen({ setView, customers, projectCases, projectTasks }) {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <button onClick={() => setView('list')} className="text-left bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg p-6 transition">
           <div className="flex items-center gap-3 mb-4 text-blue-400"><UserPlusIcon /><span className="text-2xl font-bold">資料輸入 / CRM Intake</span></div>
-          <p className="text-gray-300 mb-6">手動新增客戶、查看既有客戶、之後會加入截圖匯入 / Import Screenshot。</p>
+          <p className="text-gray-300 mb-6">手動新增客戶、查看既有客戶，或用截圖匯入建立新資料 / Manual entry or screenshot import.</p>
+          <div className="mb-6 flex flex-wrap gap-3">
+            <span className="bg-blue-600 text-white text-sm font-semibold px-3 py-2 rounded-lg">Open CRM List / 打開客戶列表</span>
+            <span onClick={(event) => { event.stopPropagation(); setView('screenshot_intake'); }} className="bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold px-3 py-2 rounded-lg">Import Screenshot / 截圖匯入</span>
+          </div>
           <div className="grid grid-cols-2 gap-3 text-sm">
             <StatPill label="客戶 / Customers" value={customers.length} />
             <StatPill label="Case / Events" value={projectCases.length} />

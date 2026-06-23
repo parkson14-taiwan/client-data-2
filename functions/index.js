@@ -40,6 +40,31 @@ function parseJsonObject(text) {
   }
 }
 
+function normalizeEventDate(result, now = new Date()) {
+  const eventDate = result?.case?.eventDate;
+  if (!eventDate || typeof eventDate !== "string") return result;
+
+  const match = eventDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return result;
+
+  const currentYear = now.getFullYear();
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(`${eventDate}T00:00:00`);
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+
+  if (!Number.isNaN(parsed.getTime()) && parsed >= today) return result;
+
+  let corrected = new Date(currentYear, month - 1, day);
+  if (corrected < today) corrected = new Date(currentYear + 1, month - 1, day);
+
+  result.case.eventDate = corrected.toISOString().slice(0, 10);
+  result.warnings = Array.isArray(result.warnings) ? result.warnings : [];
+  result.warnings.push(`Event date year normalized from ${eventDate} to ${result.case.eventDate}.`);
+  return result;
+}
+
 exports.analyzeScreenshotIntake = onCall(
   {
     secrets: [openaiApiKey],
@@ -53,10 +78,16 @@ exports.analyzeScreenshotIntake = onCall(
     }
 
     const imageDataUrl = assertImagePayload(request.data);
+    const now = new Date();
+    const todayIso = now.toISOString().slice(0, 10);
+    const currentYear = now.getFullYear();
     const prompt = [
       "You are extracting CRM intake information from a screenshot for an events/catering/yacht CRM.",
       "Return only one valid JSON object. Do not include markdown.",
       "Use ISO date format YYYY-MM-DD when a date is visible or inferable.",
+      `Today is ${todayIso}. The current operating year is ${currentYear}.`,
+      `If the screenshot shows a date without a year, use ${currentYear} unless that date has already passed, then use ${currentYear + 1}.`,
+      "Do not infer old years such as 2023, 2024, or 2025 unless the screenshot explicitly shows that year.",
       "If a field is missing, return an empty string instead of guessing.",
       "Schema:",
       JSON.stringify({
@@ -112,7 +143,7 @@ exports.analyzeScreenshotIntake = onCall(
     }
 
     try {
-      return parseJsonObject(outputText);
+      return normalizeEventDate(parseJsonObject(outputText), now);
     } catch (error) {
       console.error("Failed to parse OpenAI JSON", outputText, error);
       throw new HttpsError("internal", "AI response was not valid JSON.");

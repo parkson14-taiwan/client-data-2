@@ -92,10 +92,37 @@ const STATUS_COLORS = {
   default: 'bg-gray-400 text-white',
 };
 
+const EVENT_STATUS_OPTIONS = [
+  { value: 'new_enquiry', label: 'New Enquiry / 新詢價' },
+  { value: 'quoted', label: 'Quoted / 已報價' },
+  { value: 'confirmed', label: 'Confirmed / 已確認' },
+  { value: 'in_progress', label: 'In Progress / 處理中' },
+  { value: 'waiting_client', label: 'Waiting Client / 等客人' },
+  { value: 'canceled', label: 'Canceled / 已取消' },
+  { value: 'finished', label: 'Finished / 已完成' },
+  { value: 'lost', label: 'Lost / 未成交' },
+  { value: 'historical', label: 'Historical / 歷史紀錄' },
+];
+
+const PAYMENT_STATUS_OPTIONS = [
+  { value: 'unpaid', label: 'Unpaid / 未付款' },
+  { value: 'invoice_sent', label: 'Invoice Sent / 已發 Invoice' },
+  { value: 'deposit_paid', label: 'Deposit Paid / 已收訂金' },
+  { value: 'fully_paid', label: 'Fully Paid / 已付清' },
+  { value: 'refunded', label: 'Refunded / 已退款' },
+];
+
+const ACTIVE_EVENT_STATUSES = new Set(['new_enquiry', 'quoted', 'confirmed', 'in_progress', 'waiting_client']);
+const CLOSED_EVENT_STATUSES = new Set(['canceled', 'finished', 'lost', 'historical']);
+const CLOSED_CUSTOMER_STATUSES = new Set(['canceled', 'finished_event', 'found_other_vendor']);
+
 const getStatusLabel = (value) => {
     const option = STATUS_OPTIONS.find(o => o.value === value);
     return option ? option.label : 'Unknown';
 };
+
+const getEventStatusLabel = (value) => EVENT_STATUS_OPTIONS.find(o => o.value === value)?.label || 'New Enquiry / 新詢價';
+const getPaymentStatusLabel = (value) => PAYMENT_STATUS_OPTIONS.find(o => o.value === value)?.label || 'Unpaid / 未付款';
 
 const getInquirySourceLabel = (value) => {
     const option = INQUIRY_SOURCE_OPTIONS.find(o => o.value === value);
@@ -150,7 +177,7 @@ const RISK_COLORS = {
   gray: 'bg-gray-600 text-white',
 };
 
-const PROJECT_TASK_TEMPLATES = {
+let PROJECT_TASK_TEMPLATES = {
   default: [
     { id: 'confirm_details', name: 'Confirm pax/time/location / 確認人數、時間、地點', serviceType: 'General', offset: -7 },
     { id: 'create_proposal', name: 'Create menu/proposal / 製作菜單或方案', serviceType: 'Food', offset: -5 },
@@ -171,6 +198,28 @@ const PROJECT_TASK_TEMPLATES = {
 };
 
 const safeId = (value) => String(value || 'na').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+PROJECT_TASK_TEMPLATES = {
+  rush: [
+    { id: 'confirm_details', name: 'Confirm pax/time/location / 確認人數、時間、地點', serviceType: 'General', offset: -7, sequence: 1 },
+    { id: 'create_menu', name: 'Create menu/proposal / 製作菜單或方案', serviceType: 'Food', offset: -6, sequence: 1 },
+    { id: 'send_menu', name: 'Send menu/proposal / 發送菜單或方案', serviceType: 'Food', offset: -6, sequence: 2 },
+    { id: 'send_invoice', name: 'Send invoice / 發 Invoice', serviceType: 'Payment', offset: -5, sequence: 1 },
+    { id: 'collect_payment', name: 'Collect payment / 收訂金或尾款', serviceType: 'Payment', offset: -5, sequence: 2 },
+    { id: 'notify_supplier', name: 'Notify supplier / 通知供應商', serviceType: 'General', offset: -5, sequence: 3, trigger: 'payment_received' },
+    { id: 'final_confirmation', name: 'Final confirmation / 活動前最終確認', serviceType: 'General', offset: -1, sequence: 1 },
+    { id: 'event_day', name: 'Event day / 活動日', serviceType: 'General', offset: 0, sequence: 1 },
+  ],
+  standard: [
+    { id: 'confirm_details', name: 'Confirm pax/time/location / 確認人數、時間、地點', serviceType: 'General', offset: -14, sequence: 1 },
+    { id: 'create_menu', name: 'Create menu/proposal / 製作菜單或方案', serviceType: 'Food', offset: -13, sequence: 1 },
+    { id: 'send_menu', name: 'Send menu/proposal / 發送菜單或方案', serviceType: 'Food', offset: -13, sequence: 2 },
+    { id: 'send_invoice', name: 'Send invoice / 發 Invoice', serviceType: 'Payment', offset: -12, sequence: 1 },
+    { id: 'collect_payment', name: 'Collect payment / 收訂金或尾款', serviceType: 'Payment', offset: -10, sequence: 1 },
+    { id: 'notify_supplier', name: 'Notify supplier / 通知供應商', serviceType: 'General', offset: -10, sequence: 2, trigger: 'payment_received' },
+    { id: 'final_confirmation', name: 'Final confirmation / 活動前最終確認', serviceType: 'General', offset: -1, sequence: 1 },
+    { id: 'event_day', name: 'Event day / 活動日', serviceType: 'General', offset: 0, sequence: 1 },
+  ],
+};
 const dateToInput = (date) => date ? date.toISOString().slice(0, 10) : '';
 const parseDate = (value) => {
   if (!value) return null;
@@ -194,6 +243,44 @@ const formatDate = (value) => {
   return date ? date.toLocaleDateString('en-CA') : 'N/A';
 };
 const getTaskStatusLabel = (value) => TASK_STATUS_OPTIONS.find(option => option.value === value)?.label || '未開始 / Not Started';
+
+const normalizeStatusValue = (value) => String(value || '').toLowerCase().replace(/[\s_-]+/g, '_');
+
+const isPaymentReceived = (paymentStatus) => {
+  const status = normalizeStatusValue(paymentStatus);
+  return ['deposit_paid', 'fully_paid', 'paid', '已收訂金', '已付清'].includes(status);
+};
+
+const inferEventStatus = (event, customer, eventDate) => {
+  const explicitStatus = normalizeStatusValue(event?.eventStatus || event?.status || event?.event_status);
+  if (explicitStatus) return explicitStatus;
+  const customerStatus = normalizeStatusValue(customer?.status);
+  if (customerStatus === 'canceled') return 'canceled';
+  if (customerStatus === 'finished_event') return 'finished';
+  if (customerStatus === 'found_other_vendor') return 'lost';
+  if (eventDate && eventDate < startOfToday()) return 'historical';
+  if (customerStatus === 'confirmed') return 'confirmed';
+  if (customerStatus === 'in_progress') return 'in_progress';
+  if (customerStatus === 'no_response') return 'waiting_client';
+  return 'new_enquiry';
+};
+
+const isActiveProjectEvent = (event, customer, eventDate) => {
+  if (!eventDate || eventDate < startOfToday()) return false;
+  if (CLOSED_CUSTOMER_STATUSES.has(normalizeStatusValue(customer?.status))) return false;
+  return ACTIVE_EVENT_STATUSES.has(coerceEventStatus(inferEventStatus(event, customer, eventDate)));
+};
+
+const coerceEventStatus = (value, fallback = 'new_enquiry') => {
+  const status = normalizeStatusValue(value);
+  if (EVENT_STATUS_OPTIONS.some(option => option.value === status)) return status;
+  if (status === 'new') return 'new_enquiry';
+  if (status === 'done' || status === 'complete' || status === 'completed' || status === 'finished_event') return 'finished';
+  if (status === 'cancelled') return 'canceled';
+  if (status === 'no_response') return 'waiting_client';
+  if (status === 'found_other_vendor') return 'lost';
+  return fallback;
+};
 
 const inferServices = (event, customer) => {
   const text = [
@@ -219,7 +306,10 @@ const inferEventType = (event, services) => {
   return 'Corporate/Party Event / 公司或派對活動';
 };
 
-const selectTemplate = (caseItem) => caseItem.services.includes('Venue/Yacht') ? PROJECT_TASK_TEMPLATES.yacht : PROJECT_TASK_TEMPLATES.default;
+const selectTemplate = (caseItem) => {
+  const daysLeft = Math.max(0, Number(caseItem.daysLeft || 0));
+  return daysLeft <= 7 ? PROJECT_TASK_TEMPLATES.rush : PROJECT_TASK_TEMPLATES.standard;
+};
 
 const buildProjectCases = (customers) => {
   const cases = [];
@@ -227,9 +317,11 @@ const buildProjectCases = (customers) => {
     (customer.events || []).forEach((event, eventIndex) => {
       const eventDate = parseDate(event.eventDate);
       if (!eventDate) return;
+      if (!isActiveProjectEvent(event, customer, eventDate)) return;
       const services = inferServices(event, customer);
       const refNo = event.refNo || `${customer.id}-${eventIndex + 1}`;
       const caseId = safeId(`${customer.id}_${eventIndex}_${refNo}`);
+      const daysLeft = Math.ceil((eventDate - startOfToday()) / 86400000);
       cases.push({
         id: caseId,
         customerId: customer.id,
@@ -237,8 +329,11 @@ const buildProjectCases = (customers) => {
         phone: customer.phone || '',
         address: customer.address || '',
         customerStatus: customer.status || 'new',
+        eventStatus: coerceEventStatus(inferEventStatus(event, customer, eventDate)),
+        paymentStatus: event.paymentStatus || 'unpaid',
         eventIndex,
         eventDate: dateToInput(eventDate),
+        daysLeft,
         enquiryNo: refNo,
         eventPrice: Number(event.eventPrice || 0),
         inquirySource: event.inquirySource || 'other',
@@ -252,7 +347,9 @@ const buildProjectCases = (customers) => {
 
 const buildTemplateTasks = (caseItem) => selectTemplate(caseItem).map(template => {
   const eventDate = parseDate(caseItem.eventDate);
-  const dueDate = addDays(eventDate, template.offset);
+  const paymentReceived = isPaymentReceived(caseItem.paymentStatus);
+  const isPaymentTriggered = template.trigger === 'payment_received';
+  const dueDate = isPaymentTriggered && paymentReceived ? startOfToday() : addDays(eventDate, template.offset);
   const taskDocId = safeId(`${caseItem.id}_${template.id}`);
   return {
     id: taskDocId,
@@ -264,12 +361,14 @@ const buildTemplateTasks = (caseItem) => selectTemplate(caseItem).map(template =
     templateId: template.id,
     name: template.name,
     serviceType: template.serviceType,
+    sequence: template.sequence || 1,
+    trigger: template.trigger || '',
     owner: '',
-    plannedStartDate: dateToInput(dueDate),
-    plannedDueDate: dateToInput(dueDate),
+    plannedStartDate: isPaymentTriggered && !paymentReceived ? '' : dateToInput(dueDate),
+    plannedDueDate: isPaymentTriggered && !paymentReceived ? '' : dateToInput(dueDate),
     relativeDayOffset: template.offset,
-    status: template.defaultStatus || 'not_started',
-    notes: '',
+    status: isPaymentTriggered && !paymentReceived ? 'blocked' : (template.defaultStatus || 'not_started'),
+    notes: isPaymentTriggered && !paymentReceived ? 'Blocked by payment / 等付款後通知供應商' : '',
     isAutoGenerated: true,
     isDateManualOverride: false,
     isStatusManualOverride: false,
@@ -284,7 +383,8 @@ const mergeTasksForCase = (caseItem, storedTasks) => {
     if (!stored) return templateTask;
     const plannedDueDate = stored.isDateManualOverride ? stored.plannedDueDate : templateTask.plannedDueDate;
     const plannedStartDate = stored.isDateManualOverride ? stored.plannedStartDate : templateTask.plannedStartDate;
-    return { ...templateTask, ...stored, plannedDueDate, plannedStartDate };
+    const status = stored.isStatusManualOverride ? stored.status : templateTask.status;
+    return { ...templateTask, ...stored, plannedDueDate, plannedStartDate, status };
   });
 };
 
@@ -721,9 +821,11 @@ function ProjectCaseDetail({ db, caseItem, projectTasks, onBack }) {
   const tasks = mergeTasksForCase(caseItem, projectTasks);
   const summary = calculateCaseProgress(caseItem, tasks);
   const eventDate = parseDate(caseItem.eventDate);
-  const timelineStart = addDays(eventDate, -10) || startOfToday();
+  const earliestOffset = Math.min(-1, ...tasks.map(task => Number(task.relativeDayOffset || 0)));
+  const timelineStart = addDays(eventDate, earliestOffset) || startOfToday();
   const timelineEnd = eventDate || addDays(timelineStart, 10);
   const totalDays = Math.max(1, Math.ceil((timelineEnd - timelineStart) / 86400000));
+  const timelineOffsets = [...new Set(tasks.map(task => task.relativeDayOffset).filter(offset => offset !== undefined))].sort((a, b) => a - b);
 
   const updateTask = async (task, patch) => {
     await setDoc(doc(db, `${PROJECT_TASKS_PATH}/${task.taskDocId}`), {
@@ -745,6 +847,18 @@ function ProjectCaseDetail({ db, caseItem, projectTasks, onBack }) {
     });
   };
 
+  const updateCaseEvent = async (patch) => {
+    const customerDocPath = `${CUSTOMERS_PATH}/${caseItem.customerId}`;
+    const customerSnap = await doc(db, customerDocPath).get();
+    const exists = typeof customerSnap.exists === 'function' ? customerSnap.exists() : customerSnap.exists;
+    if (!exists) return;
+    const customerData = customerSnap.data() || {};
+    const updatedEvents = [...(customerData.events || [])];
+    updatedEvents[caseItem.eventIndex] = { ...(updatedEvents[caseItem.eventIndex] || {}), ...patch };
+    await updateDoc(doc(db, customerDocPath), { events: updatedEvents });
+    if (patch.eventStatus && CLOSED_EVENT_STATUSES.has(patch.eventStatus)) onBack();
+  };
+
   return (
     <div className="max-w-7xl mx-auto space-y-6">
       <div className="flex items-center justify-between gap-4">
@@ -764,6 +878,18 @@ function ProjectCaseDetail({ db, caseItem, projectTasks, onBack }) {
             <StatPill label="剩餘天數 / Days Left" value={summary.daysLeft ?? 'N/A'} />
             <StatPill label="進度 / Progress" value={`${summary.progressPercent}%`} />
             <StatPill label="逾期 / Overdue" value={summary.overdueCount} />
+            <div className="bg-gray-900/70 rounded-lg p-3 col-span-2">
+              <div className="text-gray-400 text-sm">Event Status / 活動狀態</div>
+              <select value={caseItem.eventStatus || 'new_enquiry'} onChange={e => updateCaseEvent({ eventStatus: e.target.value })} className="mt-1 w-full bg-gray-800 border border-gray-700 rounded p-2">
+                {EVENT_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </div>
+            <div className="bg-gray-900/70 rounded-lg p-3 col-span-2">
+              <div className="text-gray-400 text-sm">Payment Status / 付款狀態</div>
+              <select value={caseItem.paymentStatus || 'unpaid'} onChange={e => updateCaseEvent({ paymentStatus: e.target.value })} className="mt-1 w-full bg-gray-800 border border-gray-700 rounded p-2">
+                {PAYMENT_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </div>
           </div>
         </div>
       </div>
@@ -775,7 +901,7 @@ function ProjectCaseDetail({ db, caseItem, projectTasks, onBack }) {
             <div className="grid gap-4 text-xs text-gray-400 mb-2" style={{ gridTemplateColumns: '260px 1fr' }}>
               <div>任務 / Task</div>
               <div className="flex justify-between">
-                {[-10, -7, -5, -4, -3, -2, -1, 0].map(offset => <span key={offset}>{offset === 0 ? 'T' : `T${offset}`}</span>)}
+                {timelineOffsets.map(offset => <span key={offset}>{offset === 0 ? 'T' : `T${offset}`}</span>)}
               </div>
             </div>
             <div className="space-y-3">
@@ -883,7 +1009,7 @@ function AddCustomerForm({ db, onBack }) {
       const customersCollectionPath = `artifacts/${appId}/public/data/customers`;
       await addDoc(collection(db, customersCollectionPath), {
         name, phone, address, status,
-        events: eventDate && refNo ? [{ eventDate, refNo, inquirySource, eventPrice: parseFloat(eventPrice) || 0, loggedAt: Timestamp.now() }] : [],
+        events: eventDate && refNo ? [{ eventDate, refNo, inquirySource, eventPrice: parseFloat(eventPrice) || 0, eventStatus: 'new_enquiry', paymentStatus: 'unpaid', loggedAt: Timestamp.now() }] : [],
         createdAt: Timestamp.now()
       });
       onBack();
@@ -1076,6 +1202,7 @@ function ScreenshotIntake({ db, functionsApi, customers, onBack, onCreated }) {
         services,
         pax: draft.pax || '',
         paymentStatus: draft.paymentStatus || '',
+        eventStatus: 'new_enquiry',
         notes: draft.notes || '',
         source: 'screenshot',
         loggedAt: Timestamp.now(),
@@ -1364,6 +1491,7 @@ function SheetImport({ db, customers, onBack }) {
           services: splitServices(row.servicesText),
           pax: row.pax,
           paymentStatus: row.paymentStatus,
+          eventStatus: coerceEventStatus(row.status),
           notes: row.notes,
           source: 'sheet_import',
           loggedAt: Timestamp.now(),
@@ -1536,7 +1664,7 @@ function CustomerDetail({ db, customerId, onBack }) {
   if (isLoading) return <div className="text-center p-10">Loading customer details...</div>;
   if (!customer) return <div className="text-center p-10">Customer data not found.</div>;
 
-  const sortedEvents = customer.events ? [...customer.events].sort((a, b) => new Date(b.eventDate) - new Date(a.eventDate)) : [];
+  const sortedEvents = customer.events ? customer.events.map((event, originalIndex) => ({ event, originalIndex })).sort((a, b) => new Date(b.event.eventDate) - new Date(a.event.eventDate)) : [];
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -1580,10 +1708,10 @@ function CustomerDetail({ db, customerId, onBack }) {
         </div>
         {showNewEventForm && <EventForm db={db} customerDocPath={customerDocPath} onComplete={() => setShowNewEventForm(false)} />}
         <div className="space-y-4 mt-4">
-          {sortedEvents.map((event, index) => (
-            <div key={index}>
-              {editingEventIndex === index ? (
-                <EventForm db={db} customer={customer} event={event} eventIndex={index} customerDocPath={customerDocPath} onComplete={() => setEditingEventIndex(null)} />
+          {sortedEvents.map(({ event, originalIndex }) => (
+            <div key={originalIndex}>
+              {editingEventIndex === originalIndex ? (
+                <EventForm db={db} customer={customer} event={event} eventIndex={originalIndex} customerDocPath={customerDocPath} onComplete={() => setEditingEventIndex(null)} />
               ) : (
                 <div className="p-3 bg-gray-900/50 rounded-lg">
                   <div className="flex justify-between items-start">
@@ -1595,9 +1723,13 @@ function CustomerDetail({ db, customerId, onBack }) {
                         <span>Inquiry: {event.loggedAt?.toDate ? event.loggedAt.toDate().toLocaleDateString('en-CA') : ''}</span>
                         <span className="mx-2">|</span>
                         <span>Source: {getInquirySourceLabel(event.inquirySource)}</span>
+                        <span className="mx-2">|</span>
+                        <span>Status: {getEventStatusLabel(inferEventStatus(event, customer, parseDate(event.eventDate)))}</span>
+                        <span className="mx-2">|</span>
+                        <span>Payment: {getPaymentStatusLabel(event.paymentStatus)}</span>
                       </div>
                     </div>
-                    <button onClick={() => setEditingEventIndex(index)} className="text-blue-400 hover:text-blue-300 text-sm flex items-center gap-1"><EditIcon/> Edit</button>
+                    <button onClick={() => setEditingEventIndex(originalIndex)} className="text-blue-400 hover:text-blue-300 text-sm flex items-center gap-1"><EditIcon/> Edit</button>
                   </div>
                 </div>
               )}
@@ -1617,13 +1749,15 @@ function EventForm({ db, customer, event, eventIndex, customerDocPath, onComplet
   const [refNo, setRefNo] = React.useState(isEditing ? event.refNo : '');
   const [inquirySource, setInquirySource] = React.useState(isEditing ? event.inquirySource || 'other' : 'other');
   const [eventPrice, setEventPrice] = React.useState(isEditing ? event.eventPrice || '' : '');
+  const [eventStatus, setEventStatus] = React.useState(isEditing ? coerceEventStatus(inferEventStatus(event, customer, parseDate(event.eventDate))) : 'new_enquiry');
+  const [paymentStatus, setPaymentStatus] = React.useState(isEditing ? event.paymentStatus || 'unpaid' : 'unpaid');
   const [isSaving, setIsSaving] = React.useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!eventDate || !refNo || isSaving) return;
     setIsSaving(true);
-    const eventData = { eventDate, refNo, inquirySource, eventPrice: parseFloat(eventPrice) || 0, loggedAt: isEditing ? event.loggedAt : Timestamp.now() };
+    const eventData = { ...(isEditing ? event : {}), eventDate, refNo, inquirySource, eventPrice: parseFloat(eventPrice) || 0, eventStatus, paymentStatus, loggedAt: isEditing ? event.loggedAt : Timestamp.now() };
     try {
       if (isEditing) {
         const updatedEvents = [...customer.events];
@@ -1644,6 +1778,8 @@ function EventForm({ db, customer, event, eventIndex, customerDocPath, onComplet
       <h4 className="font-bold text-lg">{isEditing ? 'Edit Event' : 'Log New Event'}</h4>
       <div><label className="block text-sm font-medium text-gray-300 mb-1">{isEditing ? 'Event Date' : 'New Event Date'}</label><input type="date" value={eventDate} onChange={e => setEventDate(e.target.value)} required className="w-full bg-gray-700 border border-gray-600 rounded-lg p-2"/></div>
       <div><label className="block text-sm font-medium text-gray-300 mb-1">{isEditing ? 'Ref No.' : 'New Ref No.'}</label><input type="text" value={refNo} onChange={e => setRefNo(e.target.value)} required className="w-full bg-gray-700 border border-gray-600 rounded-lg p-2"/></div>
+      <div><label className="block text-sm font-medium text-gray-300 mb-1">Event Status / 活動狀態</label><select value={eventStatus} onChange={e => setEventStatus(e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-lg p-2">{EVENT_STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select></div>
+      <div><label className="block text-sm font-medium text-gray-300 mb-1">Payment Status / 付款狀態</label><select value={paymentStatus} onChange={e => setPaymentStatus(e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-lg p-2">{PAYMENT_STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select></div>
       <div><label className="block text-sm font-medium text-gray-300 mb-1">Event Price</label><input type="number" step="0.01" value={eventPrice} onChange={e => setEventPrice(e.target.value)} placeholder="0.00" className="w-full bg-gray-700 border border-gray-600 rounded-lg p-2"/></div>
       <div><label className="block text-sm font-medium text-gray-300 mb-1">Inquiry Source</label><select value={inquirySource} onChange={e => setInquirySource(e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-lg p-2">{INQUIRY_SOURCE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select></div>
       <div className="flex justify-end gap-2"><button type="button" onClick={onComplete} className="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded-lg">Cancel</button><button type="submit" disabled={isSaving} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg disabled:bg-gray-500">{isSaving ? 'Saving...' : 'Save Event'}</button></div>

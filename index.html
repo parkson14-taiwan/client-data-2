@@ -562,12 +562,12 @@ function App() {
     switch (view) {
       case 'loading': return <div className="text-center p-10">Loading...</div>;
       case 'error': return <div className="text-center p-10 text-red-400">{error}</div>;
-      case 'home': return <HomeScreen setView={setView} customers={customers} projectCases={projectCases} projectTasks={projectTasks} />;
+      case 'home': return <HomeScreen setView={setView} customers={customers} projectCases={projectCases} projectTasks={projectTasks} onSelectCustomer={(id) => navigateTo('detail', id)} />;
       case 'add': return <AddCustomerForm db={db} onBack={() => navigateTo('list')} />;
       case 'screenshot_intake': return <ScreenshotIntake db={db} functionsApi={functionsApi} customers={customers} onBack={() => navigateTo('list')} onCreated={(customerId) => navigateTo('detail', customerId)} />;
       case 'sheet_import': return <SheetImport db={db} customers={customers} onBack={() => navigateTo('list')} />;
       case 'detail': return <CustomerDetail db={db} customerId={selectedCustomerId} onBack={() => navigateTo('list')} />;
-      case 'project_board': return <ProjectBoard db={db} customers={customers} cases={projectCases} projectTasks={projectTasks} onSelectCase={navigateToCase} />;
+      case 'project_board': return <ProjectBoard db={db} customers={customers} cases={projectCases} projectTasks={projectTasks} onSelectCase={navigateToCase} onSelectCustomer={(id) => navigateTo('detail', id)} />;
       case 'project_detail': return <ProjectCaseDetail db={db} caseItem={selectedCase} projectTasks={projectTasks} onBack={() => setView('project_board')} />;
       case 'dashboard': return <AnalyticsDashboard customers={customers} navigateTo={navigateTo} />;
       case 'list':
@@ -613,11 +613,12 @@ function App() {
   );
 }
 
-function HomeScreen({ setView, customers, projectCases, projectTasks }) {
+function HomeScreen({ setView, customers, projectCases, projectTasks, onSelectCustomer }) {
   const summaries = projectCases.map(caseItem => calculateCaseProgress(caseItem, mergeTasksForCase(caseItem, projectTasks)));
   const redCount = summaries.filter(summary => summary.riskStatus === 'red').length;
   const yellowCount = summaries.filter(summary => summary.riskStatus === 'yellow').length;
   const waitingCount = summaries.filter(summary => summary.riskStatus === 'blue').length;
+  const missingDateCases = getMissingDateCases(customers);
 
   return (
     <div className="max-w-6xl mx-auto py-8">
@@ -636,6 +637,7 @@ function HomeScreen({ setView, customers, projectCases, projectTasks }) {
           <div className="grid grid-cols-2 gap-3 text-sm">
             <StatPill label="客戶 / Customers" value={customers.length} />
             <StatPill label="Case / Events" value={projectCases.length} />
+            <StatPill label="待補日期 / Missing Date" value={missingDateCases.length} />
           </div>
         </button>
         <button onClick={() => setView('project_board')} className="text-left bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-lg p-6 transition">
@@ -648,6 +650,7 @@ function HomeScreen({ setView, customers, projectCases, projectTasks }) {
           </div>
         </button>
       </div>
+      <MissingDatePanel rows={missingDateCases.slice(0, 6)} onSelectCustomer={onSelectCustomer} compact />
     </div>
   );
 }
@@ -657,6 +660,46 @@ function StatPill({ label, value }) {
     <div className="bg-gray-900/70 rounded-lg p-3">
       <div className="text-gray-400">{label}</div>
       <div className="text-2xl font-bold text-white">{value}</div>
+    </div>
+  );
+}
+
+function MissingDatePanel({ rows, onSelectCustomer, compact = false }) {
+  if (!rows || rows.length === 0) {
+    return (
+      <div className={`${compact ? 'mt-6' : ''} bg-gray-800 border border-gray-700 rounded-lg p-4`}>
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-semibold">待補日期 / Missing Event Date</h3>
+          <span className="text-xs bg-green-600/30 text-green-200 px-2 py-1 rounded-full">Clear / 已清空</span>
+        </div>
+        <p className="text-sm text-gray-400 mt-2">目前沒有缺活動日期的 WhatsApp case。</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`${compact ? 'mt-6' : ''} bg-gray-800 border border-yellow-700/60 rounded-lg overflow-hidden`}>
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 px-4 py-3 bg-yellow-900/20">
+        <div>
+          <h3 className="text-lg font-semibold text-yellow-200">待補日期 / Missing Event Date</h3>
+          <p className="text-sm text-yellow-100/80">These WhatsApp cases are saved, but need an Event Date before they enter Project Board.</p>
+        </div>
+        <span className="text-sm font-bold bg-yellow-500 text-gray-950 px-3 py-1 rounded-full">{rows.length} case(s)</span>
+      </div>
+      <div className="divide-y divide-gray-700">
+        {rows.map(row => (
+          <button key={`${row.customerId}-${row.eventIndex}-${row.refNo}`} onClick={() => onSelectCustomer(row.customerId)} className="w-full text-left px-4 py-3 hover:bg-gray-700/70 transition">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
+              <div>
+                <div className="font-semibold text-blue-300">{row.refNo} · {row.customerName}</div>
+                <div className="text-sm text-gray-300">{row.phone || 'No phone'} {row.pax ? `· ${row.pax}` : ''}</div>
+                <div className="text-xs text-gray-500">{row.whatsappGroupName || row.eventType || 'WhatsApp group import'}</div>
+              </div>
+              <div className="text-xs text-yellow-200 bg-yellow-900/40 border border-yellow-700 rounded-full px-3 py-1 self-start md:self-center">Waiting for date / 等日期</div>
+            </div>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -679,10 +722,11 @@ async function ensureProjectTasks(db, cases, projectTasks) {
   await Promise.all(writes);
 }
 
-function ProjectBoard({ db, customers, cases, projectTasks, onSelectCase }) {
+function ProjectBoard({ db, customers, cases, projectTasks, onSelectCase, onSelectCustomer }) {
   const [riskFilter, setRiskFilter] = React.useState('all');
   const [sortMode, setSortMode] = React.useState('risk');
   const [isSyncing, setIsSyncing] = React.useState(false);
+  const missingDateCases = React.useMemo(() => getMissingDateCases(customers), [customers]);
 
   React.useEffect(() => {
     if (!db || cases.length === 0) return;
@@ -754,6 +798,8 @@ function ProjectBoard({ db, customers, cases, projectTasks, onSelectCase }) {
         <StatPill label="7日內活動 / This Week" value={boardStats.thisWeek} />
       </div>
       {isSyncing && <p className="text-sm text-blue-300">正在同步時間線任務 / Syncing timeline tasks...</p>}
+
+      <MissingDatePanel rows={missingDateCases} onSelectCustomer={onSelectCustomer} />
 
       <div className="bg-gray-800 rounded-lg overflow-hidden border border-gray-700">
         <div className="grid grid-cols-12 gap-3 px-4 py-3 text-xs uppercase text-gray-400 bg-gray-900/70">
@@ -963,6 +1009,34 @@ function getLatestCustomerEvent(customer) {
     const dateB = parseDate(b.eventDate)?.getTime() || 0;
     return dateB - dateA;
   })[0];
+}
+
+function getMissingDateCases(customers) {
+  const rows = [];
+  customers.forEach(customer => {
+    (customer.events || []).forEach((event, eventIndex) => {
+      const eventStatus = coerceEventStatus(inferEventStatus(event, customer, parseDate(event.eventDate)));
+      const customerStatus = normalizeStatusValue(customer.status);
+      const isClosed = CLOSED_EVENT_STATUSES.has(eventStatus) || CLOSED_CUSTOMER_STATUSES.has(customerStatus);
+      const missingDate = event.missingEventDate || !parseDate(event.eventDate);
+      if (!missingDate || isClosed) return;
+      rows.push({
+        customerId: customer.id,
+        customerName: customer.name || 'Unnamed / 未命名',
+        phone: customer.phone || '',
+        address: customer.address || '',
+        eventIndex,
+        refNo: event.refNo || 'No Ref No',
+        pax: event.pax || '',
+        eventType: event.eventType || '',
+        services: Array.isArray(event.services) ? event.services : splitServices(event.services || ''),
+        whatsappGroupName: event.whatsappGroupName || '',
+        source: event.source || event.inquirySource || '',
+        loggedAt: event.loggedAt || event.missingInfoUpdatedAt || '',
+      });
+    });
+  });
+  return rows.sort((a, b) => String(b.refNo).localeCompare(String(a.refNo)));
 }
 
 function CustomerList({ customers, onSelectCustomer }) {
